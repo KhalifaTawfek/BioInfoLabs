@@ -13,6 +13,10 @@ Greedy de novo assembly – live visualiser (tkinter, stdlib only)
 
 Run:  python assembly_viz.py
 """
+import utils.clients
+import utils.http_session
+import utils.transport
+import utils.session
 import random
 import threading
 import urllib.request
