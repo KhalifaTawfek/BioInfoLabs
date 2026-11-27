@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PWM Genome Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* VOICE: clinical lab tool, quiet and exact
+   IDEA: a sequencing trace: score line riding over the coloured base strip
+   PICTURE: the scan chart, large, with the DNA letters under it when zoomed
+   COLOUR and TYPE: white / deep ink, nucleotide colours A green C blue G amber T red; Plex Sans + Plex Mono
+   LAYOUT: inputs column, then chart full width, then the three matrices and window sums */
+:root{color-scheme:light dark;--bg:light-dark(#fff,#0f1417);--panel:light-dark(#f3f5f6,#182024);--ink:light-dark(#111619,#e6ebee);--mute:light-dark(#5b666d,#94a1a8);--line:light-dark(#d9dfe2,#2a353b);--acc:light-dark(#1f5fd1,#7aa7ff);
+--A:light-dark(#1b8a3a,#4cc46d);--C:light-dark(#1f5fd1,#6f9dff);--G:light-dark(#b87500,#f0b23c);--T:light-dark(#c62828,#ff6b6b)}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "IBM Plex Sans",system-ui,sans-serif;overflow-x:clip}
+.band{padding:clamp(20px,3vw,40px) max(4vw,16px);max-width:1320px;margin:auto}
+h1{font-size:clamp(28px,4vw,40px);line-height:1.05;margin:0 0 6px;text-wrap:balance}
+h2{font-size:20px;margin:28px 0 10px}
+p{margin:0 0 10px;max-width:70ch}.mute{color:var(--mute);font-size:14px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+@media(max-width:820px){.grid{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+label{font-weight:600;font-size:14px;display:block;margin-bottom:6px}
+textarea,input,select{font:15px/1.4 "IBM Plex Mono",monospace;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;width:100%}
+textarea{min-height:170px;resize:vertical}
+input:focus-visible,textarea:focus-visible,button:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:10px}
+.row>div{flex:1 1 120px}
+.chk{display:flex;gap:8px;align-items:center;font-weight:400}.chk input{width:auto}
+button{font:600 15px "IBM Plex Sans",sans-serif;min-height:44px;padding:0 16px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.file{position:relative;overflow:hidden;display:inline-flex;align-items:center}
+.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.err{color:var(--T);font-weight:600;min-height:1.4em;margin-top:8px}
+.stats{display:flex;flex-wrap:wrap;gap:10px 28px;margin:16px 0 8px}
+.stats b{display:block;font:600 22px "IBM Plex Mono",monospace;white-space:nowrap}.stats span{font-size:13px;color:var(--mute)}
+.fig{position:relative;height:clamp(320px,46vh,480px);border:1px solid var(--line);border-radius:10px;background:var(--bg);touch-action:none;cursor:grab}
+.fig>canvas{position:absolute;inset:0;width:100%;height:100%}
+#tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);font:13px/1.4 "IBM Plex Mono",monospace;padding:6px 8px;border-radius:6px;display:none;white-space:nowrap;z-index:2}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;font:14px "IBM Plex Mono",monospace}
+th,td{padding:5px 9px;border:1px solid var(--line);text-align:right;white-space:nowrap}
+th{background:var(--panel);font-weight:600}
+.bA{color:var(--A)}.bC{color:var(--C)}.bG{color:var(--G)}.bT{color:var(--T)}
+.sums{font:13px/1.7 "IBM Plex Mono",monospace;max-height:340px;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;white-space:pre}
+.hits button{min-height:36px;font:13px "IBM Plex Mono",monospace;margin:0 6px 6px 0}
+</style></head>
+<body>
+<div class="band">
+<h1>PWM genome scanner</h1>
+<p class="mute">Training set → count matrix → relative frequencies → log-likelihood matrix LM = ln(P / 0.25) → sliding-window score over the whole FASTA sequence.</p>
+
+<div class="grid" style="margin-top:18px">
+ <div class="card">
+  <label for="train">Training set (motif examples, one per line, equal length)</label>
+  <textarea id="train" spellcheck="false">ATTCCGAAGTG
+TACGCAATCGA
+CGTGCTTACAG
+GTAATCTGAGC
+TGATCAGGCTA
+GACCTAAGGAT
+TCGATATGCCG</textarea>
+  <div class="row">
+   <div><label for="bg">Background P</label><input id="bg" type="number" step="0.01" value="0.25"></div>
+   <div><label for="pen">Score when P = 0</label><input id="pen" type="number" step="1" value="-20"></div>
+   <div><label for="thr">Hit threshold</label><input id="thr" type="number" step="0.1" value="0"></div>
+  </div>
+  <div class="row"><label class="chk"><input id="board" type="checkbox" checked> Board rounding (2 decimals, truncated, like the seminar)</label></div>
+ </div>
+ <div class="card">
+  <label for="seq">Genome / sequence (FASTA or plain)</label>
+  <textarea id="seq" spellcheck="false">&gt;S seminar example
+AGTCAATGGCTAAGCCATTA</textarea>
+  <div class="row">
+   <span class="file"><button type="button" tabindex="-1">Open FASTA file…</button><input id="file" type="file" accept=".fa,.fasta,.fna,.txt,.fas,.seq"></span>
+   <button id="demo" type="button">Demo genome (5 kb)</button>
+   <div style="flex:1 1 160px"><select id="rec" aria-label="FASTA record"></select></div>
+  </div>
+  <p class="mute" id="finfo" style="margin-top:8px"></p>
+ </div>
+</div>
+<div class="row"><button class="pri" id="run" type="button">Build matrix &amp; scan</button><span class="err" id="err"></span></div>
+
+<div class="stats" id="stats"></div>
+<div class="row" style="margin:0 0 10px">
+ <button id="fit" type="button">Fit all</button><button id="zin" type="button">Zoom in</button><button id="zout" type="button">Zoom out</button>
+ <div style="flex:0 1 200px"><input id="go" type="number" min="1" placeholder="Go to position" aria-label="Go to position"></div>
+ <span class="mute">Scroll to zoom, drag to pan. Bases appear under the line once you zoom in.</span>
+</div>
+<div class="fig" id="fig"><canvas id="cv"></canvas><div id="tip"></div></div>
+<div class="hits" id="hits" style="margin-top:12px"></div>
+
+<h2>Count matrix</h2><div class="scroll" id="tC"></div>
+<h2>Relative frequencies P</h2><div class="scroll" id="tF"></div>
+<h2>Log-likelihood matrix LM</h2><div class="scroll" id="tL"></div>
+<h2>Window scores</h2><p class="mute" id="sumnote"></p><div class="sums" id="sums"></div>
+</div>
+
+<script>
+{
+const $=id=>document.getElementById(id);
+const BASES='ACGT', IDX=new Int8Array(256).fill(-1);
+[...BASES].forEach((c,i)=>{IDX[c.charCodeAt(0)]=i;IDX[c.toLowerCase().charCodeAt(0)]=i});
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tr2=x=>Math.trunc(x*100)/100, f2=x=>(x<0?'':' ')+x.toFixed(2);
+let recs=[], seq='', codes=null, model=null, scores=null, view=[0,1], hover=-1;
+
+function parseFasta(t){
+ const out=[];let cur=null;
+ for(const ln of t.split(/\r?\n/)){
+  if(ln.startsWith('>')){cur={name:ln.slice(1).trim()||'record',parts:[]};out.push(cur)}
+  else{const s=ln.replace(/[^A-Za-z]/g,'');if(!s)continue;if(!cur){cur={name:'sequence',parts:[]};out.push(cur)}cur.parts.push(s)}
+ }
+ return out.map(r=>({name:r.name,seq:r.parts.join('').toUpperCase()}));
+}
+function loadRecords(t){
+ recs=parseFasta(t);
+ $('rec').innerHTML=recs.map((r,i)=>`<option value="${i}">${esc(r.name)} (${r.seq.length.toLocaleString()} bp)</option>`).join('');
+ $('rec').style.display=recs.length>1?'':'none';
+}
+
+function build(){
+ const lines=$('train').value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l&&!l.startsWith('>')).map(l=>l.toUpperCase().replace(/[^ACGT]/g,'')).filter(Boolean);
+ if(lines.length<1)throw'Add at least one training sequence.';
+ const m=lines[0].length;
+ const bad=lines.findIndex(l=>l.length!==m);
+ if(bad>=0)throw`Training line ${bad+1} has length ${lines[bad].length}, expected ${m}.`;
+ const n=lines.length, bg=+$('bg').value||0.25, pen=+$('pen').value, board=$('board').checked;
+ const C=[...BASES].map(()=>new Array(m).fill(0));
+ for(const l of lines)for(let j=0;j<m;j++)C[IDX[l.charCodeAt(j)]][j]++;
+ const unit=board?tr2(1/n):1/n;
+ const F=C.map(r=>r.map(c=>board?tr2(c*unit):c/n));
+ const L=F.map(r=>r.map(p=>p>0?(board?tr2(Math.log(p/bg)):Math.log(p/bg)):pen));
+ const W=new Float64Array(m*4);for(let j=0;j<m;j++)for(let b=0;b<4;b++)W[j*4+b]=L[b][j];
+ return{lines,m,n,C,F,L,W,pen};
+}
+function scan(){
+ const m=model.m, N=codes.length-m+1;
+ scores=new Float32Array(Math.max(N,0));
+ for(let i=0;i<N;i++){let s=0;for(let j=0;j<m;j++){const c=codes[i+j];if(c<0){s=NaN;break}s+=model.W[j*4+c]}scores[i]=s}
+}
+function table(M,fmt,zeroMark){
+ const m=M[0].length;
+ return `<table><thead><tr><th></th>${Array.from({length:m},(_,j)=>`<th>${j+1}</th>`).join('')}</tr></thead><tbody>${
+  M.map((r,b)=>`<tr><th class="b${BASES[b]}">${BASES[b]}</th>${r.map((v,j)=>`<td>${zeroMark&&model.F[b][j]===0?'–':fmt(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function run(){
+ $('err').textContent='';
+ try{
+  model=build();
+  const r=recs[+$('rec').value||0];
+  if(!r||!r.seq.length)throw'Paste a sequence or open a FASTA file.';
+  seq=r.seq;codes=new Int8Array(seq.length);for(let i=0;i<seq.length;i++)codes[i]=IDX[seq.charCodeAt(i)];
+  if(seq.length<model.m)throw`Sequence (${seq.length} bp) is shorter than the motif (${model.m}).`;
+  scan();
+ }catch(e){$('err').textContent=e;return}
+ $('tC').innerHTML=table(model.C,v=>v);
+ $('tF').innerHTML=table(model.F,v=>v.toFixed(2));
+ $('tL').innerHTML=table(model.L,f2,true);
+ report();fit();
+}
+function report(){
+ const thr=+$('thr').value, m=model.m;
+ let best=-Infinity,bi=-1,hits=[];
+ for(let i=0;i<scores.length;i++){const s=scores[i];if(s>best){best=s;bi=i}if(s>=thr)hits.push(i)}
+ const top=[...scores.keys()].filter(i=>!isNaN(scores[i])).sort((a,b)=>scores[b]-scores[a]).slice(0,12);
+ $('stats').innerHTML=[['Sequence',seq.length.toLocaleString()+' bp'],['Motif length',m],['Training examples',model.n],['Windows scanned',scores.length.toLocaleString()],['Best score',isFinite(best)?best.toFixed(2)+' @ '+(bi+1):'–'],[`Windows ≥ ${thr}`,hits.length.toLocaleString()]]
+  .map(([k,v])=>`<div><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+ $('hits').innerHTML='<span class="mute">Top windows: </span>'+top.map(i=>`<button type="button" data-i="${i}">#${i+1} ${esc(seq.substr(i,m))} ${scores[i].toFixed(2)}</button>`).join('');
+ const lim=Math.min(scores.length,300);
+ $('sumnote').textContent=`Each window S_k starts at position k. ${scores.length>lim?`Showing the first ${lim} of ${scores.length.toLocaleString()}.`:''}`;
+ let out='';
+ for(let i=0;i<lim;i++){
+  const parts=[];for(let j=0;j<m;j++){const c=codes[i+j];parts.push(c<0?'N':(v=>v<0?`(${v.toFixed(2)})`:v.toFixed(2))(model.W[j*4+c]))}
+  out+=`S${i+1} [${seq.substr(i,m)}] = ${parts.join(' + ')} = ${isNaN(scores[i])?'n/a':scores[i].toFixed(2)}\n`;
+ }
+ $('sums').textContent=out;
+}
+
+/* ---------- chart ---------- */
+const cv=$('cv'), ctx=cv.getContext('2d'), fig=$('fig'), tip=$('tip');
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let geo=null;
+function fit(){view=[0,seq.length];draw()}
+function clampView(a,b){const L=seq.length,minW=Math.min(L,12);let w=Math.max(minW,Math.min(L,b-a));a=Math.max(0,Math.min(L-w,a));view=[a,a+w]}
+function nice(span,target){const raw=span/target,p=10**Math.floor(Math.log10(raw));for(const k of[1,2,5,10])if(k*p>=raw)return k*p;return 10*p}
+function draw(){
+ const W=cv.clientWidth,H=cv.clientHeight,d=devicePixelRatio||1;
+ cv.width=W*d;cv.height=H*d;ctx.setTransform(d,0,0,d,0,0);ctx.clearRect(0,0,W,H);
+ const ink=css('--ink'),mute=css('--mute'),line=css('--line'),acc=css('--acc');
+ if(!scores||!scores.length){ctx.fillStyle=mute;ctx.font='15px "IBM Plex Sans"';ctx.fillText('Build the matrix to see the scan.',20,30);return}
+ const[a,b]=view,n=b-a,small=W<520;
+ const pL=small?40:56,pR=12,pT=14,pw=W-pL-pR,ppb=pw/n,letters=ppb>=9,stripH=letters?30:0,pB=26+stripH,ph=H-pT-pB;
+ const x=i=>pL+(i-a+.5)*ppb;
+ let lo=Infinity,hi=-Infinity;
+ for(let i=Math.max(0,a-1);i<Math.min(scores.length,b+1);i++){const s=scores[i];if(s<lo)lo=s;if(s>hi)hi=s}
+ if(!isFinite(lo)){lo=-1;hi=1}if(hi-lo<1e-9){lo-=1;hi+=1}const padv=(hi-lo)*.08;lo-=padv;hi+=padv;
+ const y=v=>pT+(hi-v)/(hi-lo)*ph;
+ geo={a,b,pL,pw,ppb,pT,ph,x,y,H,stripH};
+ // grid + y axis
+ ctx.font='12px "IBM Plex Mono"';ctx.textAlign='right';ctx.textBaseline='middle';
+ const ys=nice(hi-lo,small?4:6);
+ for(let v=Math.ceil(lo/ys)*ys;v<=hi;v+=ys){ctx.strokeStyle=line;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pL,y(v));ctx.lineTo(W-pR,y(v));ctx.stroke();ctx.fillStyle=mute;ctx.fillText(+v.toFixed(2),pL-6,y(v))}
+ // x axis ticks
+ ctx.textAlign='center';ctx.textBaseline='top';
+ const xs=Math.max(1,nice(n,small?4:8));
+ for(let p=Math.ceil((a+1)/xs)*xs;p<=b;p+=xs){ctx.fillStyle=mute;ctx.fillText(p.toLocaleString(),x(p-1),H-22)}
+ // threshold
+ const thr=+$('thr').value;
+ if(thr>lo&&thr<hi){ctx.setLineDash([5,4]);ctx.strokeStyle=css('--T');ctx.beginPath();ctx.moveTo(pL,y(thr));ctx.lineTo(W-pR,y(thr));ctx.stroke();ctx.setLineDash([])}
+ // hover window band
+ if(hover>=0&&hover<scores.length){ctx.fillStyle=acc+'22';ctx.fillRect(x(hover)-ppb/2,pT,Math.max(2,model.m*ppb),ph+stripH)}
+ // line
+ ctx.save();ctx.beginPath();ctx.rect(pL,pT,pw,ph);ctx.clip();
+ ctx.strokeStyle=acc;ctx.lineWidth=1.6;ctx.beginPath();
+ if(n>pw){
+  for(let px=0;px<pw;px++){
+   const i0=a+Math.floor(px*n/pw),i1=Math.min(scores.length,a+Math.floor((px+1)*n/pw)+1);let mn=Infinity,mx=-Infinity;
+   for(let i=i0;i<i1;i++){const s=scores[i];if(s<mn)mn=s;if(s>mx)mx=s}
+   if(mn===Infinity)continue;ctx.moveTo(pL+px+.5,y(mx));ctx.lineTo(pL+px+.5,y(mn)+.5);
+  }
+ }else{
+  let pen=false;for(let i=Math.max(0,a-1);i<Math.min(scores.length,b+1);i++){const s=scores[i];if(isNaN(s)){pen=false;continue}pen?ctx.lineTo(x(i),y(s)):ctx.moveTo(x(i),y(s));pen=true}
+ }
+ ctx.stroke();
+ if(ppb>=5){ctx.fillStyle=acc;for(let i=a;i<Math.min(scores.length,b);i++)if(!isNaN(scores[i])){ctx.beginPath();ctx.arc(x(i),y(scores[i]),2.6,0,7);ctx.fill()}}
+ ctx.restore();
+ // sequence strip
+ if(letters){
+  const sy=pT+ph+4;ctx.font=`600 ${Math.min(16,ppb*.9)}px "IBM Plex Mono"`;ctx.textBaseline='top';
+  for(let i=a;i<b;i++){const ch=seq[i],v=IDX[seq.charCodeAt(i)];ctx.fillStyle=v<0?mute:css('--'+ch);ctx.fillText(ch,x(i),sy+4)}
+ }
+ ctx.strokeStyle=line;ctx.strokeRect(pL+.5,pT+.5,pw,ph);
+}
+function idxAt(px){return geo?Math.floor(geo.a+(px-geo.pL)/geo.ppb):-1}
+fig.addEventListener('wheel',e=>{if(!geo)return;e.preventDefault();const r=cv.getBoundingClientRect(),c=geo.a+(e.clientX-r.left-geo.pL)/geo.ppb,k=e.deltaY>0?1.25:0.8,[a,b]=view;clampView(c-(c-a)*k,c+(b-c)*k);draw()},{passive:false});
+let drag=null;
+fig.addEventListener('pointerdown',e=>{drag={x:e.clientX,v:[...view]};fig.setPointerCapture(e.pointerId);fig.style.cursor='grabbing'});
+fig.addEventListener('pointerup',()=>{drag=null;fig.style.cursor=''});
+fig.addEventListener('pointermove',e=>{
+ if(!geo||!scores)return;const r=cv.getBoundingClientRect(),px=e.clientX-r.left;
+ if(drag){const sh=(drag.x-e.clientX)/geo.ppb;clampView(drag.v[0]+sh,drag.v[1]+sh);draw();return}
+ const i=idxAt(px);
+ if(i>=0&&i<scores.length&&px>=geo.pL){hover=i;tip.style.display='block';
+  tip.textContent=`S${i+1}  pos ${(i+1).toLocaleString()}  ${seq.substr(i,model.m)}  ${isNaN(scores[i])?'n/a':scores[i].toFixed(2)}`;
+  tip.style.left=Math.min(px+12,fig.clientWidth-tip.offsetWidth-4)+'px';tip.style.top='8px'}
+ else{hover=-1;tip.style.display='none'}
+ draw();
+});
+fig.addEventListener('pointerleave',()=>{hover=-1;tip.style.display='none';draw()});
+const zoom=k=>{const[a,b]=view,c=(a+b)/2;clampView(c-(c-a)*k,c+(b-c)*k);draw()};
+$('fit').onclick=fit;$('zin').onclick=()=>zoom(.5);$('zout').onclick=()=>zoom(2);
+const goTo=i=>{clampView(i-40,i+40+(model?model.m:0));hover=i;draw()};
+$('go').onchange=e=>{const p=+e.target.value;if(p>0&&seq)goTo(p-1)};
+$('hits').onclick=e=>{const t=e.target.closest('button');if(t)goTo(+t.dataset.i)};
+const ro=new ResizeObserver(draw);ro.observe(fig);
+
+/* ---------- inputs ---------- */
+$('seq').oninput=()=>loadRecords($('seq').value);
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new FileReader();
+ rd.onload=()=>{const t=rd.result;loadRecords(t);$('finfo').textContent=`${f.name}: ${recs.length} record(s), ${recs.reduce((s,r)=>s+r.seq.length,0).toLocaleString()} bp`;
+  $('seq').value=t.length>20000?t.slice(0,20000)+'\n… (file loaded in full; preview truncated)':t;run()};rd.readAsText(f)};
+$('demo').onclick=()=>{
+ const tl=$('train').value.split(/\n/).map(s=>s.trim().toUpperCase()).filter(Boolean);let s='';
+ for(let i=0;i<5000;i++)s+=BASES[Math.random()*4|0];
+ const pos=[];for(let k=0;k<tl.length;k++){const p=300+k*650+(Math.random()*200|0);pos.push(p+1);s=s.slice(0,p)+tl[k]+s.slice(p+tl[k].length)}
+ const fa='>demo random 5 kb, training motifs planted at '+pos.join(',')+'\n'+s.match(/.{1,70}/g).join('\n');
+ $('seq').value=fa;loadRecords(fa);$('finfo').textContent='Demo: random sequence with each training example planted once.';run()};
+['bg','pen','thr','board','rec'].forEach(id=>$(id).addEventListener('change',()=>{if(seq||recs.length)run()}));
+$('run').onclick=run;
+loadRecords($('seq').value);run();
+}
+</script>
+</body>
+</html>
